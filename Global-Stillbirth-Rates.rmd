@@ -1,0 +1,395 @@
+---
+title: "Global Stillbirth Rates Cluster Analysis"
+author: "Kelsey McCornack"
+date: "2022-10-19"
+output: github_document
+---
+
+```{r, setup, include = FALSE}
+knitr::opts_knit$set(root.dir = 'C:\\Users\\kmcco\\OneDrive\\Desktop\\Data sets\\UN Key Gender Indicators\\Clean Data Sets')
+```
+
+```{r, warning = FALSE, message=FALSE}
+# load libraries
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(GGally)
+library(mvnormtest)
+library(factoextra)
+library(fmsb)
+```
+
+```{r}
+# select chart my.colors
+my.colors <- c('#EC008C', '#4D1434')
+```
+
+## Load & transform data -------------------------------------------------------
+```{r}
+# Load data
+still.birth.raw <- read.csv('StillbirthRate_UNICEF.csv')
+abortion.rate <- read.csv('AbortionRatebyCountry_UNdata.csv')
+III.1 <- read.csv('III.1_FamilyPlanningNeedsSatisfied_UNdata.csv')
+III.3 <- read.csv('III.3_MaternalMortalityRate_UNdata.csv')
+III.4.1 <- read.csv('III.4.1_AntenatalCareRate1+Visits_UNdata.csv')
+III.4.4 <- read.csv('III.4.4_AntenatalCare4+Visits_UNdata.csv')
+III.5 <- read.csv('III.5_BirthsAttendedbySkilledProfessional.csv')
+III.6 <- read.csv('III.6_AgeStandardizedTobaccoUse_WHOdata.csv')
+III.7 <- read.csv('III.7_ObesityProportion_UNdata.csv')
+III.10 <- read.csv('III.10_LifeExpectancyatAge60_UNdata.csv')
+III.11 <- read.csv('III.11_MortalityRateCardivascularCancerDiabetesRespiratoryDisease_WHOdata.csv')
+QV.4 <- read.csv('QV.4_MinimumLegalMarriageAgeWithoutConsent_UNData.csv')
+V.5 <- read.csv('V.5_AdolescentBirthRate_WHOdata.csv')
+UN.Region.Codes <- read.csv('UN Region Codes.csv')
+```
+
+```{r, warning = FALSE, message = FALSE}
+# prep data set for merging
+colnames(still.birth.raw) <- c('Country.or.Area', seq(2000, 2019))
+
+names <- colnames(still.birth.raw[-1])
+
+still.birth <- still.birth.raw %>%
+  pivot_longer(cols=names,
+               names_to = 'Year',
+               values_to = 'still.birth.rate',
+               values_drop_na = FALSE)
+
+still.birth$still.birth.rate <- still.birth$still.birth.rate/1000
+still.birth$Year <- as.integer(still.birth$Year)
+
+merge.col <- c('Country.or.Area', 'Year')
+names(III.7)[1] <- 'Country.or.Area'
+names(III.10)[1] <- merge.col[1]
+names(III.11)[1] <- merge.col[1]
+
+head(still.birth)
+```
+
+```{r}
+# Merge dataframes
+master <- as.data.frame(UN.Region.Codes[,c('Country.or.Area', 'Region.Name', 'Sub.region.Name')])
+
+master <- merge(master, still.birth, by = 'Country.or.Area') %>%
+  full_join(abortion.rate, by = merge.col) %>%
+  full_join(III.1, by = merge.col) %>%
+  full_join(III.3, by = merge.col) %>%
+  full_join(III.4.1, by = merge.col) %>%
+  full_join (III.4.4, by = merge.col) %>%
+  full_join(III.5, by = merge.col) %>%
+  full_join(III.6, by = merge.col) %>%
+  full_join(III.7, by = merge.col) %>%
+  full_join(III.10, by = merge.col) %>%
+  full_join(III.11, by = merge.col) %>%
+  full_join(QV.4, by = merge.col) %>%
+  full_join(V.5, by = merge.col)
+
+table(complete.cases(master))
+```
+
+```{r}
+# Normalize data with caret package
+# https://www.pluralsight.com/guides/normalizing-data-r
+preprocess <- preProcess(master[,-c(1:4)], method=c('center','scale'))
+
+normalized <- predict(preprocess, master[,-c(1:4)])
+
+normalized <- cbind(master[1:4], normalized)
+boxplot(normalized[-c(1:4)], frame=F)
+title(main = 'Boxplots of Normalized Variables')
+abline(h=3, lty= 2, col = my.colors[1])
+abline(h=-3, lty= 2, col = my.colors[1])
+```
+
+```{r}
+# remove values outside  +- 3 standard deviations
+num.val <- normalized[-c(1:4)]
+
+num.val[num.val > 3] <- NA
+num.val[num.val < -3] <- NA
+
+no.outliers <- cbind(normalized[1:4], num.val)
+
+# rotate data labels?
+```
+
+```{r}
+# bin by country
+vars <- names(no.outliers[-c(1:4)])
+
+country.means <- no.outliers %>%
+  group_by(Country.or.Area) %>%
+  summarise_at(vars, mean, na.rm = TRUE)
+```
+
+## Variable significance tests -------------------------------------------------
+
+```{r}
+# cor tests: each var vs. still birth rate
+cor.tests <- cor.test(country.means$Abortion.Rate, country.means$still.birth.rate, use = 'pairwise.complete.obs')
+
+cor.test(country.means$Abortion.Rate, country.means$still.birth.rate, use = 'pairwise.complete.obs')
+
+cor.tests <- as.data.frame(cor.tests[2:4])
+
+for(i in 4:ncol(country.means)){
+  cor <- cor.test(unlist(country.means[i]), country.means$still.birth.rate, use='pairwise.complete.obs')
+  cor.tests <- rbind(cor.tests, as.data.frame(cor[2:4]))
+}
+
+rownames(cor.tests) <- names(country.means[-c(1:2)])
+
+cor.tests <- cor.tests[order(desc(abs(cor.tests$estimate))),]
+
+round(cor.tests, 3)
+
+#write.csv(cor.tests, file='cor.tests.csv')
+```
+
+```{r}
+# Keeping only the 4 most significant variables
+sig.var <- c('Country.or.Area', 'Region.Name', 'Sub.region.Name','Year', 'still.birth.rate','III.5', 'III.3', 'III.10', 'III.4.4', 'III.1')
+
+in.col <- which(colnames(no.outliers) %in% sig.var)
+sig.var.only <- no.outliers[in.col]
+
+head(sig.var.only)
+```
+
+```{r}
+# bin data by country
+vars <- names(sig.var.only[-c(1:4)])
+vars
+
+col.means <- sig.var.only %>%
+  group_by(Country.or.Area) %>%
+  summarise_at(vars, mean, na.rm = TRUE)
+
+complete.by.country2 <- col.means[complete.cases(col.means),]
+head(complete.by.country2)
+
+nrow(complete.by.country2)
+```
+
+```{r, message = FALSE}
+# pairs plot
+ggpairs(complete.by.country2[-1])+
+  theme_classic()
+```
+
+## MANOVA ----------------------------------------------------------------------
+```{r}
+# test for multivariate Normality with Shapiro-Wilk test
+mshapiro.test(t(as.matrix(complete.by.country2[-c(1:4)])))
+```
+Normality: Large enough sample, but Wilks p = .04
+Collinearity: rsq !> .8
+
+## Cluster Analysis ------------------------------------------------------------
+
+```{r}
+# Use elbow method to determine number of clusters
+# k-means clustering
+norm.mat <- as.matrix(complete.by.country2[-1])
+k.mean <- kmeans(norm.mat, 2)
+k.mean
+
+fviz_nbclust(norm.mat, kmeans, method = 'wss', k.max = 8, linecolor = my.colors[2])+
+  geom_vline(xintercept = 2, linetype = 2, color = my.colors[1])+
+  labs(subtitle='Elbow Method')+
+  theme(plot.title = element_text(hjust = .75), plot.subtitle = element_text(hjust = .75))
+```
+## Build Model -----------------------------------------------------------------
+```{r}
+# Looking at clustering by different variables
+head(complete.by.country2)
+
+norm.mat1 <- as.matrix(complete.by.country2[c(2, 3, 4, 6)])
+k.mean1 <- kmeans(norm.mat1, 2)
+k.mean1
+# 61% of data explained by variance between 
+
+norm.mat2 <- as.matrix(complete.by.country2[c(2, 3, 6)])
+k.mean2 <- kmeans(norm.mat2, 2)
+k.mean2
+# 65% 
+
+norm.mat3 <- as.matrix(complete.by.country2[c(2, 4)])
+k.mean3 <- kmeans(norm.mat3, 2)
+k.mean3
+# 63.7%
+
+# BEST MODEL
+norm.mat4 <- as.matrix(complete.by.country2[c(2,6)])
+k.mean4 <- kmeans(norm.mat4, 2)
+k.mean4$betweenss
+# 68.7% var explained
+k.mean4
+
+head(complete.by.country2)
+#add clusters to rows
+complete.by.country2$cluster <- as.factor(k.mean4$cluster)
+
+table(k.mean$centers)
+table(k.mean4$centers)
+```
+
+```{r}
+# Test cluster
+# https://www.datanovia.com/en/blog/k-means-clustering-visualization-in-r-step-by-step-guide/
+clust.plot <- fviz_cluster(k.mean4, data = norm.mat4, 
+             palette = my.colors,
+             geom = "point",
+             ellipse.type = "convex", 
+             ggtheme = theme_classic(),
+             )
+
+clust.plot+
+  coord_fixed()+
+  theme(axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 20))
+```
+
+```{r}
+# Make cluster coodinate plot
+labels <-
+  ggparcoord(complete.by.country2, columns = 2:7,mapping=aes(color=as.factor(cluster)))+
+    theme_classic()+
+    scale_color_manual('cluster', values = my.colors, labels = levels(complete.by.country2$cluster))+
+    ggtitle('Coordinate Plot')+
+    scale_x_discrete(labels=c('stillbirth', 'family planning', 'maternal mortality', '4+ antenatal visits',
+                              'birth attended by pro', 'life expectancy at 60'))+
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 15),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          legend.title = element_text(size = 15),
+          legend.text = element_text(size = 15),
+          plot.title = element_text(size = 20))
+
+labels
+```
+
+```{r}
+# Make mini data frames with means and min/max values for radar chart
+vars <- names(complete.by.country2[-c(1, 8)])
+
+clust.means <- complete.by.country2[-1] %>%
+  group_by(cluster) %>%
+  summarise_at(vars, mean)
+
+clust.means$cluster <- as.character(clust.means$cluster)
+clust.means
+
+max <- c(rep(1.5, ncol(clust.means)))
+max
+min <- c(rep(-1, ncol(clust.means)))
+min
+
+radar.df <- as.data.frame(rbind(max, min, clust.means[-1]))
+radar.df
+
+rownames(radar.df) <- c('Max', 'Min', '1', '2')
+radar.df
+
+labels <- c('stillbirth rate', 'family \n planning', 'maternal \n mortality', '4+ antenatal \n visits',
+                            'birth attended by \n skilled professional', 'life expectancy \n at age 60')
+```
+
+```{r}
+# Make radar chart
+# https://www.datanovia.com/en/blog/beautiful-radar-chart-in-r-using-fmsb-and-ggplot-packages/
+radarchart(radar.df,
+           # customize polygons
+           pcol=my.colors, pfcol=scales::alpha(my.colors, .5), plwd = 1, plty=1,
+           #customize grid
+           cglcol = 'gray', cglty = 1, cglwd = .8,
+           vlabels = labels, vlcex = .9)
+title(main='Radar Chart: Normalized Cluster Means', cex.main = 1.5)
+```
+
+```{r}
+# World map with cluster assignments
+# https://stackoverflow.com/questions/72434010/color-different-countries-with-r-based-on-ggplot-and-map-data
+cluster1.countries <- subset(complete.by.country2$Country.or.Area, complete.by.country2$cluster == 1)
+cluster1.countries
+
+cluster2.countries <- subset(complete.by.country2$Country.or.Area, complete.by.country2$cluster == 2)
+cluster2.countries
+
+world <- map_data('world')
+
+world <- mutate(world, fill = case_when(
+  region %in% cluster1.countries ~ my.colors[1], 
+  region %in% cluster2.countries ~ my.colors[2], 
+  TRUE ~ "white"))
+
+ggplot(world, aes(long, lat, fill = fill, group = group))+
+  xlim(-100, 150) + ylim(-50, 70)+
+  theme_void()+
+  geom_map(map = world, aes(map_id = region), fill = 'white', color='gray')+
+  geom_polygon(color = 'gray')+
+  scale_fill_identity()
+```
+
+```{r, warning = FALSE, message = FALSE}
+# Make linear predictive model of stillbirth rates over time
+colnames(still.birth.raw[-1]) <- as.numeric(colnames(still.birth.raw[-1]))
+vars <-colnames(still.birth.raw[-1])
+
+avg.stillbirth.rate <- still.birth.raw[-1] %>%
+  summarise_at(vars, mean) %>%
+  as.data.frame()
+
+avg.stillbirth.rate <- avg.stillbirth.rate %>%
+  pivot_longer(cols = vars, names_to = 'Year', values_to = 'stillbirth.rate')
+
+avg.stillbirth.rate$Year <- as.numeric(avg.stillbirth.rate$Year)
+
+df <- avg.stillbirth.rate
+y <- avg.stillbirth.rate$stillbirth.rate
+x <- avg.stillbirth.rate$Year
+
+m1 <- lm(y ~ x, data = df)
+summary(m1)
+
+pred <- as.data.frame(seq(2020,2030, 1))
+colnames(pred) <- 'x'
+
+typeof(pred$Year)
+
+pred$y <- predict(m1, pred)
+
+colnames(pred) <- c('Year', 'stillbirth.rate')
+pred$group <- 1
+
+avg.stillbirth.rate$group <- 0
+
+avg.stillbirth.rate <- rbind(avg.stillbirth.rate, pred)
+```
+
+```{r}
+# Plot predicted global stillbirth rate over time
+avg.stillbirth.rate$Year <- as.numeric(avg.stillbirth.rate$Year)
+avg.stillbirth.rate$group <- as.factor(avg.stillbirth.rate$group)
+
+over.time <- avg.stillbirth.rate %>%
+  ggplot(mapping = aes(Year,stillbirth.rate, color = group, group = 1))+
+  theme_classic()+
+  geom_line(size = 1.4)+
+  ylim(5,15)+
+  scale_color_manual(values = c('#EC008C', "dark gray"), labels = c('observed', 'predicted'))+
+  theme(legend.title = element_blank(),
+        legend.position = 'top',
+        legend.text = element_text(size = 10),
+        axis.text = element_text(size = 10),
+        title = element_text(size = 15))+
+  labs(title = 'Global stillbirth rate over time', y = 'stillbirths per 1000 live births')
+
+over.time
+```
